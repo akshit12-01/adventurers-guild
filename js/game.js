@@ -123,7 +123,8 @@ const Game = (() => {
         secretBossesFound: 0,
       },
       partyExpansions: 0,  // 0-3 purchased expansions (party size 4→7)
-      autoRun: null,      // { strategy:'safe'|'balanced'|'push', remaining, total, rank } or null
+      autoRun: null,
+      battleMode: 'auto',      // { strategy:'safe'|'balanced'|'push', remaining, total, rank } or null
       nextMemberId: 1,
       pendingResults: null,
       tower: getDefaultTowerState(), // Tower Climb game mode
@@ -331,6 +332,7 @@ const Game = (() => {
         state.guild.activeQuest = null;
       }
       // Migration: add tutorial state if missing (mark as dismissed for existing saves)
+      if (state.battleMode !== 'manual') state.battleMode = 'auto';
       if (!state.tutorial) state.tutorial = { step: 0, dismissed: true };
 
       return true;
@@ -1683,7 +1685,9 @@ const Game = (() => {
   // EVENT_INTERVAL_MS is the time between revealing each combat event.
   const EVENT_INTERVAL_MS = 1500; // 1.5 seconds per event
 
-  function startQuest(questId) {
+  function startQuest(questId, opts) {
+    const manual = !!(opts && opts.battleMode === 'manual');
+    if (manual && state.autoRun) return { ok: false, reason: 'Stop Auto-Battle before starting a manual battle.' };
     // Try generated quest first, then fall back to static
     const quest = getGeneratedQuest(questId) || getQuest(questId);
     if (!quest) return { ok:false, reason:'Quest not found' };
@@ -1698,18 +1702,29 @@ const Game = (() => {
       questData: quest,
     };
 
+    if (manual) {
+      Object.assign(state.guild.activeQuest, {
+        battleMode: 'manual',
+        manualDecisions: [],
+        manualAutoRest: false,
+        pausedMs: 0,
+        awaitingInput: false,
+        simEnv: captureSimEnv(questId, snapshot),
+      });
+    }
     logEvent(`Party departed for: ${quest.title}`);
     save();
     return { ok:true };
   }
 
   // Called by the UI after the combat simulation is built
-  function setQuestEventCount(count, intervalMs, decisiveIndex, fastForwardMs) {
+  function setQuestEventCount(count, intervalMs, decisiveIndex, fastForwardMs, awaiting) {
     if (state.guild.activeQuest) {
       state.guild.activeQuest.eventCount = count;
       state.guild.activeQuest.eventIntervalMs = intervalMs || EVENT_INTERVAL_MS;
       state.guild.activeQuest.decisiveIndex = (decisiveIndex != null) ? decisiveIndex : (count - 1);
       state.guild.activeQuest.fastForwardMs = fastForwardMs || 80;
+      state.guild.activeQuest.awaitingInput = !!awaiting;
     }
   }
 
@@ -1758,6 +1773,10 @@ const Game = (() => {
   function questEventsRevealed() {
     if (!state.guild.activeQuest) return 0;
     const aq = state.guild.activeQuest;
+    if (aq.battleMode === 'manual') {
+      const _ivl = _getEventInterval();
+      return Math.min(aq.eventCount || 1, Math.max(1, Math.floor(questElapsedMs() / _ivl) + 1));
+    }
     const elapsed = Date.now() - aq.startedAt;
     const interval = _getEventInterval();
     const decisive = (aq.decisiveIndex != null) ? aq.decisiveIndex : ((aq.eventCount || 1) - 1);
@@ -1783,6 +1802,7 @@ const Game = (() => {
     const aq = state.guild.activeQuest;
     if (!aq.eventCount) return 0;
     const revealed = questEventsRevealed();
+    if (aq.battleMode === 'manual' && !isQuestComplete()) return Math.min(0.88, revealed / (revealed + 8));
     return Math.min(1, revealed / aq.eventCount);
   }
 
@@ -1790,10 +1810,15 @@ const Game = (() => {
     if (!state.guild.activeQuest) return false;
     const aq = state.guild.activeQuest;
     if (!aq.eventCount) return false;
+    if (aq.battleMode === 'manual' && aq.awaitingInput) return false;
     return questEventsRevealed() >= aq.eventCount;
   }
 
   function finishQuest() {
+    {
+      const _maq = state.guild.activeQuest;
+      if (_maq && _maq.battleMode === 'manual' && _maq.awaitingInput) return;
+    }
     if (!state.guild.activeQuest) return;
     const aq = state.guild.activeQuest;
     const quest = aq.questData || getGeneratedQuest(aq.questId) || getQuest(aq.questId);
@@ -1890,6 +1915,38 @@ const Game = (() => {
     save();
   }
 
+  function captureSimEnv(questId, snapshot) {
+    const clone = (o) => (o == null ? o : JSON.parse(JSON.stringify(o)));
+    const auras = getPartyAuras();
+    const env = {
+      dmgBonus: getDmgBonus(questId),
+      dmgReduction: getDmgReduction(questId),
+      atkSpeedBonus: getAtkSpeedBonus(questId),
+      healBonus: getHealBonus(questId),
+      talents: ((state.guildLegacy && state.guildLegacy.talents) || []).slice(),
+      auras: clone(auras),
+      members: {},
+    };
+    for (const snap of snapshot) {
+      const m = getMember(snap.id);
+      if (!m) continue;
+      env.members[snap.id] = {
+        eff: clone(effectiveStats(m, auras)),
+        skills: getActiveMemberSkills(snap.id).slice(),
+        equipment: clone(m.equipment || {}),
+      };
+    }
+    return env;
+  }
+  function questElapsedMs() {
+    const aq = state.guild.activeQuest;
+    if (!aq) return 0;
+    return Math.max(0, Date.now() - aq.startedAt - (aq.pausedMs || 0));
+  }
+  function setBattleMode(mode) {
+    state.battleMode = mode === 'manual' ? 'manual' : 'auto';
+    save();
+  }
   function resolveIdle() {
     if (!state.guild.activeQuest) return;
     if (isQuestComplete()) finishQuest();
@@ -2214,7 +2271,7 @@ const Game = (() => {
     expandParty, getPartyExpansionCost, getMaxPartySize,
 
     // Engine
-    startQuest, finishQuest, resolveIdle, startTick, stopTick,
+    startQuest, finishQuest, resolveIdle, startTick, stopTick, questElapsedMs, setBattleMode,
 
     // Tower Climb
     towerCanEnter, towerEnter, towerContinueFromRest, towerExit, getTowerState,

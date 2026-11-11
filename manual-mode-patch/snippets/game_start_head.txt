@@ -1,0 +1,3 @@
+  function startQuest(questId, opts) {
+    const manual = !!(opts && opts.battleMode === 'manual');
+    if (manual && state.autoRun) return { ok: false, reason: 'Stop Auto-Battle before starting a manual battle.' };

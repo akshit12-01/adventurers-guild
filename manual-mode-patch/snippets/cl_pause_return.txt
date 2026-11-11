@@ -1,0 +1,8 @@
+  if (manualPending) {
+    _combatDebug.atb.totalRounds = roundCount;
+    return {
+      events, snapshots, partyHp, enemies, totalEvents: events.length, battleOutcome: null,
+      effectiveInterval, combatStats, combatDebug: _combatDebug,
+      decisiveIndex: Math.max(0, events.length - 1), pending: manualPending,
+    };
+  }

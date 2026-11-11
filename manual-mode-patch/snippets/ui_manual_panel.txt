@@ -1,0 +1,82 @@
+// ── Manual battle panel ──────────────────────────────────────────────────
+let manualPick = null; // { index, skillId } — a single-target move waiting for its target
+function sendManualChoice(pending, skillId, targetId) {
+  const r = submitManualChoice({ index: pending.index, skillId, targetId });
+  manualPick = null;
+  if (!r.ok) showToast(r.reason, 'error');
+  const host = document.getElementById('aq-manual-panel');
+  if (host) host.dataset.key = '';
+  tickUpdateCombatVisuals();
+}
+function updateManualPanel(aq) {
+  const host = document.getElementById('aq-manual-panel');
+  if (!host) return;
+  if (!aq || aq.battleMode !== 'manual') {
+    if (host.dataset.key) { host.innerHTML = ''; host.dataset.key = ''; }
+    return;
+  }
+  const pending = getPendingDecision();
+  if (!pending) {
+    manualPick = null;
+    if (host.dataset.key !== 'none') {
+      host.innerHTML = aq.manualAutoRest ? '<div class="aq-manual-note">🤖 The party is finishing the battle on its own…</div>' : '';
+      host.dataset.key = 'none';
+    }
+    return;
+  }
+  if (manualPick && manualPick.index !== pending.index) manualPick = null;
+  const caughtUp = Game.questEventsRevealed() >= (aq.eventCount || 0);
+  const key = caughtUp ? `ask:${pending.index}:${manualPick ? manualPick.skillId : ''}` : `wait:${pending.index}`;
+  if (host.dataset.key === key) return;
+  host.dataset.key = key;
+  if (!caughtUp) {
+    host.innerHTML = '<div class="aq-manual-note">⏳ The battle unfolds…</div>';
+    return;
+  }
+  const sel = manualPick ? pending.options.find(o => o.id === manualPick.skillId) : null;
+  const skillBtns = pending.options.map(o => {
+    const tag = o.kind === 'aoe' ? 'all enemies' : o.kind === 'single' ? 'one enemy' : 'party';
+    const cd = o.ready ? '' : ` · cooldown ${o.cd}`;
+    return `<button class="btn btn-sm aq-manual-skill${sel && sel.id === o.id ? ' selected' : ''}" data-skill="${esc(o.id)}" ${o.ready ? '' : 'disabled'} title="${esc(o.desc)}">${o.icon} ${esc(o.name)} <span class="aq-manual-tag">${tag}${cd}</span></button>`;
+  }).join('');
+  let targetRow = '';
+  if (sel && sel.kind === 'single') {
+    targetRow = `<div class="aq-manual-subhead">Choose a target for ${esc(sel.name)}</div><div class="aq-manual-row">` +
+      pending.enemies.map(e => `<button class="btn btn-sm aq-manual-target" data-enemy="${esc(e.id)}">👹 ${e.name} <span class="aq-manual-tag">${e.hp}/${e.maxHp}</span></button>`).join('') +
+      '</div>';
+  }
+  host.innerHTML = `
+    <div class="aq-manual-head">🎮 ${pending.memberName}'s turn — choose a ${pending.lane === 'buff' ? 'support move' : 'move'}</div>
+    <div class="aq-manual-row">${skillBtns}</div>
+    ${targetRow}
+    <div class="aq-manual-foot"><button class="btn btn-sm btn-ghost aq-manual-auto">🤖 Auto-resolve the rest</button></div>`;
+  host.querySelectorAll('.aq-manual-skill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const o = pending.options.find(x => x.id === btn.dataset.skill);
+      if (!o || !o.ready) return;
+      if (o.kind === 'single' && pending.enemies.length > 1) {
+        manualPick = { index: pending.index, skillId: o.id };
+        updateManualPanel(aq);
+        return;
+      }
+      sendManualChoice(pending, o.id, o.kind === 'single' ? pending.enemies[0].id : null);
+    });
+  });
+  host.querySelectorAll('.aq-manual-target').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!manualPick) return;
+      sendManualChoice(pending, manualPick.skillId, btn.dataset.enemy);
+    });
+  });
+  const autoBtn = host.querySelector('.aq-manual-auto');
+  if (autoBtn) {
+    autoBtn.addEventListener('click', () => {
+      if (!confirm('Let the party finish this battle on its own? You cannot take control back.')) return;
+      const r = autoResolveManualBattle();
+      if (!r.ok) showToast(r.reason, 'error');
+      manualPick = null;
+      host.dataset.key = '';
+      tickUpdateCombatVisuals();
+    });
+  }
+}

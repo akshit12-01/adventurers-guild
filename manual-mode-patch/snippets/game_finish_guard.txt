@@ -1,0 +1,5 @@
+  function finishQuest() {
+    {
+      const _maq = state.guild.activeQuest;
+      if (_maq && _maq.battleMode === 'manual' && _maq.awaitingInput) return;
+    }

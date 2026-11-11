@@ -1,0 +1,1 @@
+  function setQuestEventCount(count, intervalMs, decisiveIndex, fastForwardMs, awaiting) {

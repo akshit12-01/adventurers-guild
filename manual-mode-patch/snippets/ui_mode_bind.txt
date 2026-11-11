@@ -1,0 +1,7 @@
+  el.querySelectorAll('.btn-battle-mode').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      Game.setBattleMode(btn.dataset.mode);
+      renderQuests(setTabCallback);
+    });
+  });

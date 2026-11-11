@@ -1,0 +1,1 @@
+  if (s.guild.activeQuest) updateManualPanel(s.guild.activeQuest);

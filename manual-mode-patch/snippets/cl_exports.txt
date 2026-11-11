@@ -1,0 +1,50 @@
+// ── Manual battle API ────────────────────────────────────────────────────
+export function getPendingDecision() {
+  const aq = Game.state.guild.activeQuest;
+  if (!aq || aq.battleMode !== 'manual') return null;
+  const sim = ensureSim();
+  return sim && sim.pending ? sim.pending : null;
+}
+function _freezeManualClock(aq, sim) {
+  // Called when the sim was waiting on the player: restart the playback clock
+  // at the last revealed event so the next events play at normal pace instead
+  // of fast-forwarding through the time spent deciding.
+  const intervalMs = sim.effectiveInterval * 1000;
+  aq.pausedMs = Math.max(0, Date.now() - aq.startedAt - Math.max(0, sim.totalEvents - 1) * intervalMs);
+}
+export function submitManualChoice(choice) {
+  const aq = Game.state.guild.activeQuest;
+  if (!aq || aq.battleMode !== 'manual') return { ok: false, reason: 'No manual battle in progress.' };
+  const sim = ensureSim();
+  if (!sim || !sim.pending) return { ok: false, reason: 'No one is waiting for orders.' };
+  const pending = sim.pending;
+  if (!choice || choice.index !== pending.index) return { ok: false, reason: 'That turn has already passed.' };
+  if (Game.questEventsRevealed() < sim.totalEvents) return { ok: false, reason: 'Wait for the current action to finish.' };
+  const opt = pending.options.find(o => o.id === choice.skillId);
+  if (!opt) return { ok: false, reason: 'That move is not available.' };
+  if (!opt.ready) return { ok: false, reason: `${opt.name} is on cooldown.` };
+  let targetId = null;
+  if (opt.kind === 'single') {
+    const t = pending.enemies.find(e => e.id === choice.targetId);
+    if (!t) return { ok: false, reason: 'Choose a valid target.' };
+    targetId = t.id;
+  }
+  _freezeManualClock(aq, sim);
+  aq.manualDecisions = (aq.manualDecisions || []).concat([{ skillId: opt.id, targetId }]);
+  if (!ensureSim()) return { ok: false, reason: 'The battle could not continue.' };
+  Game.save();
+  return { ok: true };
+}
+export function autoResolveManualBattle() {
+  const aq = Game.state.guild.activeQuest;
+  if (!aq || aq.battleMode !== 'manual') return { ok: false, reason: 'No manual battle in progress.' };
+  if (aq.manualAutoRest) return { ok: true };
+  const sim = ensureSim();
+  if (!sim) return { ok: false, reason: 'The battle could not continue.' };
+  if (!sim.pending) return { ok: true };
+  if (Game.questEventsRevealed() >= sim.totalEvents) _freezeManualClock(aq, sim);
+  aq.manualAutoRest = true;
+  if (!ensureSim()) return { ok: false, reason: 'The battle could not continue.' };
+  Game.save();
+  return { ok: true };
+}

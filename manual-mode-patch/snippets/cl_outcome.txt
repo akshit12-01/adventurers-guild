@@ -1,0 +1,5 @@
+export function getBattleOutcome() {
+  const aq = Game.state && Game.state.guild && Game.state.guild.activeQuest;
+  if (aq && aq.battleMode === 'manual') ensureSim();
+  return _sim ? _sim.battleOutcome : null;
+}

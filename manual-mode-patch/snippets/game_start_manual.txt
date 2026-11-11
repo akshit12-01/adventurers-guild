@@ -1,0 +1,10 @@
+    if (manual) {
+      Object.assign(state.guild.activeQuest, {
+        battleMode: 'manual',
+        manualDecisions: [],
+        manualAutoRest: false,
+        pausedMs: 0,
+        awaitingInput: false,
+        simEnv: captureSimEnv(questId, snapshot),
+      });
+    }

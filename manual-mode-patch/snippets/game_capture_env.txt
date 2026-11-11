@@ -1,0 +1,23 @@
+  function captureSimEnv(questId, snapshot) {
+    const clone = (o) => (o == null ? o : JSON.parse(JSON.stringify(o)));
+    const auras = getPartyAuras();
+    const env = {
+      dmgBonus: getDmgBonus(questId),
+      dmgReduction: getDmgReduction(questId),
+      atkSpeedBonus: getAtkSpeedBonus(questId),
+      healBonus: getHealBonus(questId),
+      talents: ((state.guildLegacy && state.guildLegacy.talents) || []).slice(),
+      auras: clone(auras),
+      members: {},
+    };
+    for (const snap of snapshot) {
+      const m = getMember(snap.id);
+      if (!m) continue;
+      env.members[snap.id] = {
+        eff: clone(effectiveStats(m, auras)),
+        skills: getActiveMemberSkills(snap.id).slice(),
+        equipment: clone(m.equipment || {}),
+      };
+    }
+    return env;
+  }

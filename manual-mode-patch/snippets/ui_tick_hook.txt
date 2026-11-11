@@ -1,0 +1,1 @@
+  updateManualPanel(aq);

@@ -1,0 +1,1 @@
+          <div class="aq-manual-panel" id="aq-manual-panel"></div>

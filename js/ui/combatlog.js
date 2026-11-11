@@ -652,32 +652,71 @@ const T_LAST_STAND_KNIGHT = [
 
 let _sim = null;       // cached simulation
 let _simQuestId = null;
+let _simKey = null;
+
+// ── Sim environment ──────────────────────────────────────────────────────
+// Everything buildSimulation reads from live game state goes through here.
+// Auto battles have no aq.simEnv and read live state exactly as before.
+// Manual battles freeze these inputs when the quest starts (aq.simEnv), so the
+// battle can be replayed identically after every decision and after a reload,
+// whatever the player does in other tabs in the meantime.
+function makeSimEnv(aq) {
+  const env = aq.simEnv || null;
+  if (!env) {
+    return {
+      getDmgBonus: (q) => (Game.getDmgBonus ? Game.getDmgBonus(q) : 0),
+      getDmgReduction: (q) => (Game.getDmgReduction ? Game.getDmgReduction(q) : 0),
+      getAtkSpeedBonus: (q) => (Game.getAtkSpeedBonus ? Game.getAtkSpeedBonus(q) : 0),
+      getHealBonus: (q) => (Game.getHealBonus ? Game.getHealBonus(q) : 0),
+      hasTalent: (id) => (Game.hasTalent ? Game.hasTalent(id) : false),
+      getPartyAuras: () => (Game.getPartyAuras ? Game.getPartyAuras() : null),
+      effStats: (id, auras) => { const m = Game.getMember(id); return m ? Game.effectiveStats(m, auras) : null; },
+      equipment: (id) => { const m = Game.getMember(id); return m ? (m.equipment || {}) : null; },
+      skills: (id) => (Game.getActiveMemberSkills ? Game.getActiveMemberSkills(id) : []),
+    };
+  }
+  const talents = new Set(env.talents || []);
+  const memberEnv = (id) => (env.members && env.members[id]) || null;
+  const clone = (o) => (o == null ? o : JSON.parse(JSON.stringify(o)));
+  return {
+    getDmgBonus: () => env.dmgBonus || 0,
+    getDmgReduction: () => env.dmgReduction || 0,
+    getAtkSpeedBonus: () => env.atkSpeedBonus || 0,
+    getHealBonus: () => env.healBonus || 0,
+    hasTalent: (id) => talents.has(id),
+    getPartyAuras: () => clone(env.auras || null),
+    effStats: (id) => { const me = memberEnv(id); return me ? clone(me.eff) : null; },
+    equipment: (id) => { const me = memberEnv(id); return me ? clone(me.equipment || {}) : null; },
+    skills: (id) => { const me = memberEnv(id); return me ? (me.skills || []).slice() : []; },
+  };
+}
 
 function buildSimulation(aq, quest) {
   const seed = aq.startedAt;
+  const SE = makeSimEnv(aq);
   const members = aq.partySnapshot || [];
   const enemyNames = quest.enemies || ['Monster'];
   const envName = quest.environment ? esc(quest.environment.name) : 'the unknown';
 
   // Synergy bonuses for repeated quests
-  let dmgBonus = 1 + (Game.getDmgBonus ? Game.getDmgBonus(aq.questId) : 0);
-  const dmgReduction = Game.getDmgReduction ? Game.getDmgReduction(aq.questId) : 0;
-  let atkSpeedBonus = Game.getAtkSpeedBonus ? Game.getAtkSpeedBonus(aq.questId) : 0;
+  let dmgBonus = 1 + SE.getDmgBonus(aq.questId);
+  const dmgReduction = SE.getDmgReduction(aq.questId);
+  let atkSpeedBonus = SE.getAtkSpeedBonus(aq.questId);
 
   // Legacy talent combat modifiers
-  const _ht = (id) => Game.hasTalent ? Game.hasTalent(id) : false;
+  const _ht = (id) => SE.hasTalent(id);
   const isBossQuest = !!quest.boss;
   if (_ht('PARTY_SIEGE') && isBossQuest) dmgBonus += 0.25;
   // Initialize party auras early so healBonus can include partyHealBonus
-  const simAuras = Game.getPartyAuras ? Game.getPartyAuras() : null;
+  const simAuras = SE.getPartyAuras();
   const partyHealAura = simAuras ? simAuras.heal : 0;
   // healBonus computed after partyHp is built (needs per-member item/skill healBonus)
-  let healBonus = 1 + (Game.getHealBonus ? Game.getHealBonus(aq.questId) : 0) + partyHealAura;
+  let healBonus = 1 + (SE.getHealBonus(aq.questId)) + partyHealAura;
   // Compute effective event interval (faster with ATK speed synergy)
   const effectiveInterval = EVENT_INTERVAL * (1 - atkSpeedBonus);
   const partyHp = members.map(m => {
-    const member = Game.getMember(m.id);
-    const eff = member ? Game.effectiveStats(member, simAuras) : m.stats;
+    const member = SE.effStats(m.id, simAuras);
+    const eff = member || m.stats;
     return {
       id: m.id, name: esc(m.name), class: m.class,
       maxHp: eff.maxHp || m.stats.maxHp || 100,
@@ -708,7 +747,7 @@ function buildSimulation(aq, quest) {
 
   // ── Capture initial combat stats for debug display ──
   const _combatDebug = {
-    healBonus: { synergy: Game.getHealBonus ? Game.getHealBonus(aq.questId) : 0, partyAura: partyHealAura, memberItem: memberHealBonuses.length ? Math.max(...memberHealBonuses) : 0, total: healBonus },
+    healBonus: { synergy: SE.getHealBonus(aq.questId), partyAura: partyHealAura, memberItem: memberHealBonuses.length ? Math.max(...memberHealBonuses) : 0, total: healBonus },
     dmgBonus, dmgReduction, atkSpeedBonus,
     partyAuras: simAuras,
     members: partyHp.map(p => ({
@@ -718,7 +757,7 @@ function buildSimulation(aq, quest) {
       // Skill list captured at sim start so the party-composition printer can
       // show the skills that were actually in play rather than the post-levelup
       // list (fight victories often trigger level-ups that learn new skills).
-      skills: Game.getActiveMemberSkills ? Game.getActiveMemberSkills(p.id) : [],
+      skills: SE.skills(p.id),
     })),
     // ATB tracking — populated during battle loop
     atb: {
@@ -810,7 +849,8 @@ function buildSimulation(aq, quest) {
   // PARTY_CEL_RESONANCE: celestial equipment grants +10% to all stats
   if (_ht('PARTY_CEL_RESONANCE')) {
     for (const p of partyHp) {
-      const member = Game.getMember(p.id);
+      const _eq = SE.equipment(p.id);
+      const member = _eq ? { equipment: _eq } : null;
       if (!member) continue;
       const slots = ['weapon', 'armor', 'offhand', 'accessory'];
       let hasCelestial = false;
@@ -1277,7 +1317,7 @@ function buildSimulation(aq, quest) {
   let clericRegenSourceName = null;
 
   for (const m of members) {
-    const memberSkills = Game.getActiveMemberSkills ? Game.getActiveMemberSkills(m.id) : [];
+    const memberSkills = SE.skills(m.id);
     if (m.class === 'KNIGHT' && memberSkills.includes('BULWARK')) {
       knightsWithCover.add(m.id);
       coverCooldowns[m.id] = 0;
@@ -1562,7 +1602,7 @@ function buildSimulation(aq, quest) {
   for (const m of members) {
     // Dynamic skill lookup — recomputes from class + level + equipment every sim
     // so newly added class skills auto-apply to existing characters on game load.
-    const allSkills = Game.getActiveMemberSkills ? Game.getActiveMemberSkills(m.id) : [];
+    const allSkills = SE.skills(m.id);
 
     memberAttackSkills[m.id] = [];
     memberBuffSkills[m.id] = [];
@@ -1616,7 +1656,7 @@ function buildSimulation(aq, quest) {
   // ── Initialize passive deflect buffs (Monk 2H Flowing Defense) ────────
   // Scan party equipment for passive deflect skills and set permanent buffs.
   for (const m of members) {
-    const allSkills = Game.getActiveMemberSkills ? Game.getActiveMemberSkills(m.id) : [];
+    const allSkills = SE.skills(m.id);
     for (const sid of allSkills) {
       const sk = getSkill(sid);
       if (!sk || sk.type !== 'passive' || !sk.effects || !sk.effects.isDeflect) continue;
@@ -1817,7 +1857,75 @@ function buildSimulation(aq, quest) {
     }
   }
 
-  for (let i = 0; i < MAX_BATTLE_EVENTS; i++) {
+  // ── Manual battle mode ─────────────────────────────────────────────────
+  // In a manual battle the player chooses the move (and target) for every
+  // party attack / buff turn. The sim stays a pure function of
+  // (seed, frozen inputs, recorded decisions): when it reaches a turn that has
+  // no recorded decision it stops and describes that turn in `pending`. The UI
+  // records the answer and the battle is replayed from the start with one more
+  // decision. Heals, reactive skills, passives and equipment procs stay automatic.
+  const manualMode = aq.battleMode === 'manual';
+  const manualDecisions = Array.isArray(aq.manualDecisions) ? aq.manualDecisions : [];
+  const manualAutoRest = manualMode && !!aq.manualAutoRest;
+  const MANUAL_BASIC = '__BASIC__';
+  let manualCursor = 0;
+  let manualPending = null;
+  let manualTargetId = null;
+  function pickTarget(list, s) {
+    if (manualTargetId) {
+      const t = list.find(e => e.id === manualTargetId);
+      if (t) return t;
+    }
+    return sPick(list, s);
+  }
+  function manualOptions(member, lane) {
+    const cds = skillCooldowns[member.id] || {};
+    const opts = [];
+    if (lane === 'attack') {
+      opts.push({ id: MANUAL_BASIC, name: 'Basic Attack', icon: '⚔', desc: 'A plain strike against one enemy.', kind: 'single', ready: true, cd: 0 });
+    }
+    const pool = lane === 'attack' ? memberAttackSkills[member.id] : memberBuffSkills[member.id];
+    for (const sid of pool || []) {
+      const sk = getSkill(sid);
+      if (!sk) continue;
+      if (lane === 'buff' && sid === 'CAMOUFLAGE' && member.class !== 'RANGER') continue;
+      const cd = cds[sid] || 0;
+      const kind = lane === 'attack'
+        ? (AOE_SKILLS[sid] ? 'aoe' : 'single')
+        : (sid === 'MARK_FOR_DEATH' ? 'single' : 'party');
+      opts.push({ id: sid, name: sk.name || sid, icon: sk.icon || '✦', desc: sk.description || '', kind, ready: cd <= 0, cd });
+    }
+    return opts;
+  }
+  // Returns null (automatic turn), { skip } (nothing usable), { pause } (waiting
+  // for the player) or { skillId, targetId } (the move to perform).
+  function manualTurn(member, lane, foes) {
+    if (!manualMode) return null;
+    if (manualAutoRest && manualCursor >= manualDecisions.length) return null;
+    const usable = manualOptions(member, lane).filter(o => o.ready);
+    if (usable.length === 0) return { skip: true };
+    const needsTarget = (o) => o.kind === 'single';
+    if (usable.length === 1 && (!needsTarget(usable[0]) || foes.length === 1)) {
+      return { skillId: usable[0].id, targetId: needsTarget(usable[0]) ? foes[0].id : null };
+    }
+    const d = manualDecisions[manualCursor];
+    if (d) {
+      manualCursor++;
+      const o = usable.find(x => x.id === d.skillId) || usable[0];
+      const t = needsTarget(o) && foes.some(e => e.id === d.targetId) ? d.targetId : null;
+      return { skillId: o.id, targetId: t };
+    }
+    manualPending = {
+      index: manualCursor,
+      memberId: member.id,
+      memberName: member.name,
+      lane,
+      options: manualOptions(member, lane),
+      enemies: foes.map(e => ({ id: e.id, name: e.name, hp: e.hp, maxHp: e.maxHp })),
+    };
+    return { pause: true };
+  }
+  roundLoop: for (let i = 0; i < MAX_BATTLE_EVENTS; i++) {
     _bufState.regenPerTick = regenPerTick;
     _bufState.clericRegenPerTick = clericRegenPerTick;
     _bufState.divineShieldRounds = divineShieldRounds;
@@ -1928,6 +2036,7 @@ function buildSimulation(aq, quest) {
       // Snapshot living enemy count before the actor acts — used by the
       // Arcane Aftershock kill-hook at the end of the loop body to detect
       // whether this actor's action produced a fresh killing blow.
+      manualTargetId = null;
       const _enemiesAlivePre = enemies.filter(e => e.alive).length;
 
       if (actor.lane === 'attack') {
@@ -1942,7 +2051,13 @@ function buildSimulation(aq, quest) {
           const _dmgBefore = symphonyLeechActive && combatStats[attacker.id] ? combatStats[attacker.id].dmgDealt : 0;
 
           const targetCount = livingEnemies.length;
-          let skillPool = memberAttackSkills[attacker.id].filter(sid => !skillCooldowns[attacker.id][sid]);
+          const _mt = manualTurn(attacker, 'attack', livingEnemies);
+          if (_mt && _mt.pause) break roundLoop;
+          const manualPick = _mt && !_mt.skip ? _mt : null;
+          manualTargetId = manualPick ? manualPick.targetId : null;
+          let skillPool = manualPick
+            ? (manualPick.skillId === MANUAL_BASIC ? [] : [manualPick.skillId])
+            : memberAttackSkills[attacker.id].filter(sid => !skillCooldowns[attacker.id][sid]);
   
           if (skillPool.length === 0) {
             // Basic attack — no skills off cooldown
@@ -1950,7 +2065,7 @@ function buildSimulation(aq, quest) {
               _combatDebug.atb.laneActions[attacker.id].attack.fires++;
               _combatDebug.atb.laneActions[attacker.id].attack.basicFallbacks++;
             }
-            const target = sPick(livingEnemies, es + 100);
+            const target = pickTarget(livingEnemies, es + 100);
             let baseDmg = calcPartyDmg(attacker, es + 101, dmgBonus);
             // Knight basic attacks blend a small amount of DEF so they don't
             // feel completely weightless between skill procs.
@@ -2129,7 +2244,7 @@ function buildSimulation(aq, quest) {
             actionPerformed = true;
           } else {
             // Skill attack
-            const skillId = sPick(skillPool, es + 200);
+            const skillId = manualPick ? manualPick.skillId : sPick(skillPool, es + 200);
             const skill = getSkill(skillId);
             const atkProcRoll = sRand(es + 201);
             const atkProcThreshold = skill ? (skill.procChance || 0.70) : 0.70;
@@ -2142,7 +2257,7 @@ function buildSimulation(aq, quest) {
               procChance: atkProcThreshold, roll: Math.round(atkProcRoll * 1000) / 1000,
               fired: skill && atkProcRoll < atkProcThreshold,
             });
-            if (skill && atkProcRoll < atkProcThreshold) {
+            if (skill && (manualPick || atkProcRoll < atkProcThreshold)) {
               if (_combatDebug.atb.laneActions[attacker.id]) {
                 _combatDebug.atb.laneActions[attacker.id].attack.fires++;
                 _combatDebug.atb.laneActions[attacker.id].attack.skillFires++;
@@ -2362,12 +2477,12 @@ function buildSimulation(aq, quest) {
                 if (spellEchoRounds[attacker.id] > 0) baseDmg = Math.floor(baseDmg * 1.50);
             if (phaseShiftDmgBoost[attacker.id] > 0) baseDmg = Math.floor(baseDmg * 1.25);
                 {
-                  const _mtEnt = sPick(livingEnemies, es + 207);
+                  const _mtEnt = pickTarget(livingEnemies, es + 207);
                   if (markedEnemies[_mtEnt.id]) baseDmg = Math.floor(baseDmg * 1.20);
                   if (executeMarkRounds[_mtEnt.id] > 0) baseDmg = Math.floor(baseDmg * 1.10);
                 }
   
-                const target = sPick(livingEnemies, es + 208);
+                const target = pickTarget(livingEnemies, es + 208);
                 target.hp = Math.max(0, target.hp - baseDmg);
                 if (combatStats[attacker.id]) combatStats[attacker.id].dmgDealt += baseDmg;
                 text = sPick(T_HEROS_WRATH, es + 209)(attacker.name, target.name, baseDmg);
@@ -2400,7 +2515,7 @@ function buildSimulation(aq, quest) {
                 if (spellEchoRounds[attacker.id] > 0) baseDmg = Math.floor(baseDmg * 1.50);
             if (phaseShiftDmgBoost[attacker.id] > 0) baseDmg = Math.floor(baseDmg * 1.25);
 
-                const target = sPick(livingEnemies, es + 211);
+                const target = pickTarget(livingEnemies, es + 211);
                 if (markedEnemies[target.id]) baseDmg = Math.floor(baseDmg * 1.20);
                 if (executeMarkRounds[target.id] > 0) baseDmg = Math.floor(baseDmg * 1.10);
                 target.hp = Math.max(0, target.hp - baseDmg);
@@ -2467,7 +2582,7 @@ function buildSimulation(aq, quest) {
                 const ppIsCrit = ppCritRoll < 0.10;
                 if (ppIsCrit) baseDmg = Math.floor(baseDmg * 1.5);
 
-                const target = sPick(livingEnemies, es + 217);
+                const target = pickTarget(livingEnemies, es + 217);
                 if (markedEnemies[target.id]) baseDmg = Math.floor(baseDmg * 1.20);
                 if (executeMarkRounds[target.id] > 0) baseDmg = Math.floor(baseDmg * 1.10);
                 target.hp = Math.max(0, target.hp - baseDmg);
@@ -2535,7 +2650,7 @@ function buildSimulation(aq, quest) {
                 if (cadenceRounds > 0) baseDmg = Math.floor(baseDmg * 1.15);
                 if (swiftPalmRounds > 0) baseDmg = Math.floor(baseDmg * 1.25);
 
-                const target = sPick(livingEnemies, es + 211);
+                const target = pickTarget(livingEnemies, es + 211);
                 if (markedEnemies[target.id]) baseDmg = Math.floor(baseDmg * 1.20);
                 if (executeMarkRounds[target.id] > 0) baseDmg = Math.floor(baseDmg * 1.10);
                 target.hp = Math.max(0, target.hp - baseDmg);
@@ -2693,7 +2808,7 @@ function buildSimulation(aq, quest) {
                 _combatDebug.atb.laneActions[attacker.id].attack.fires++;
                 _combatDebug.atb.laneActions[attacker.id].attack.basicFallbacks++;
               }
-              const target = sPick(livingEnemies, es + 250);
+              const target = pickTarget(livingEnemies, es + 250);
               let baseDmg = calcPartyDmg(attacker, es + 251, dmgBonus);
               if (wrathBuff[attacker.id] > 0) baseDmg = Math.floor(baseDmg * 1.30);
               if (spellEchoRounds[attacker.id] > 0) baseDmg = Math.floor(baseDmg * 1.50);
@@ -3603,7 +3718,13 @@ function buildSimulation(aq, quest) {
   
         const buffSkills = memberBuffSkills[buffMember.id];
         const readySkills = buffSkills.filter(sid => !skillCooldowns[buffMember.id][sid]);
-        const skillPool = readySkills.length > 0 ? readySkills : buffSkills;
+        const _mtb = manualTurn(buffMember, 'buff', livingEnemies);
+        if (_mtb && _mtb.pause) break roundLoop;
+        const manualBuffPick = _mtb && !_mtb.skip ? _mtb : null;
+        manualTargetId = manualBuffPick ? manualBuffPick.targetId : null;
+        const skillPool = _mtb
+          ? (manualBuffPick ? [manualBuffPick.skillId] : [])
+          : (readySkills.length > 0 ? readySkills : buffSkills);
 
         if (skillPool.length > 0) {
           // Knight Taunt priority: if Taunt is available and no enemies are
@@ -3630,7 +3751,7 @@ function buildSimulation(aq, quest) {
             fired: skill && buffProcRoll < buffProcThreshold,
           });
 
-          if (skill && buffProcRoll < buffProcThreshold) {
+          if (skill && (manualBuffPick || buffProcRoll < buffProcThreshold)) {
             if (_combatDebug.atb.laneActions[buffMember.id]) {
               _combatDebug.atb.laneActions[buffMember.id].buff.fires++;
             }
@@ -3669,7 +3790,7 @@ function buildSimulation(aq, quest) {
               text = `${buffMember.name} pours their soul into a <span class="sk-skill">Magnum Opus</span> — +15% dmg, +10% crit, +15% MAG for 2 rounds!`;
               icon = '🎼';
             } else if (skillId === 'MARK_FOR_DEATH') {
-              const target = sPick(livingEnemies, es + 403);
+              const target = pickTarget(livingEnemies, es + 403);
               markedEnemies[target.id] = 2;
               text = sPick(T_MARK_FOR_DEATH, es + 404)(buffMember.name, target.name);
               icon = '🎯';
@@ -4826,6 +4947,14 @@ function buildSimulation(aq, quest) {
   }
   
   // Finalize ATB debug
+  if (manualPending) {
+    _combatDebug.atb.totalRounds = roundCount;
+    return {
+      events, snapshots, partyHp, enemies, totalEvents: events.length, battleOutcome: null,
+      effectiveInterval, combatStats, combatDebug: _combatDebug,
+      decisiveIndex: Math.max(0, events.length - 1), pending: manualPending,
+    };
+  }
   _combatDebug.atb.totalRounds = roundCount;
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -5233,6 +5362,13 @@ function makeSnapshot(party, enemies, buffs) {
 }
 
 // ── Ensure sim is built ────────────────────────────────────────────────
+function manualSimKey(aq) {
+  if (aq.battleMode !== 'manual') return '';
+  return `${aq.startedAt}:${(aq.manualDecisions || []).length}:${aq.manualAutoRest ? 'a' : 'm'}`;
+}
+function syncManualInfo(sim) {
+  Game.setQuestEventCount(sim.totalEvents, sim.effectiveInterval * 1000, sim.decisiveIndex, FAST_FORWARD_INTERVAL * 1000, !!sim.pending);
+}
 function ensureSim() {
   const aq = Game.state.guild.activeQuest;
   if (!aq) { _sim = null; _simQuestId = null; return null; }
@@ -5240,10 +5376,12 @@ function ensureSim() {
   const quest = aq.questData || Game.getGeneratedQuest(aq.questId) || getQuest(aq.questId);
   if (!quest) return null;
 
-  if (_simQuestId !== aq.questId) {
+  if (_simQuestId !== aq.questId || _simKey !== manualSimKey(aq)) {
     try {
       _sim = buildSimulation(aq, quest);
       _simQuestId = aq.questId;
+      _simKey = manualSimKey(aq);
+      if (aq.battleMode === 'manual') syncManualInfo(_sim);
     } catch (err) {
       console.error('[CombatSim] buildSimulation crashed — clearing stuck quest:', err);
       _sim = null;
@@ -5260,6 +5398,8 @@ function ensureSim() {
 
 // Get the battle outcome from the current simulation ('victory' or 'defeat' or null)
 export function getBattleOutcome() {
+  const aq = Game.state && Game.state.guild && Game.state.guild.activeQuest;
+  if (aq && aq.battleMode === 'manual') ensureSim();
   return _sim ? _sim.battleOutcome : null;
 }
 
@@ -5277,6 +5417,9 @@ const FAST_FORWARD_INTERVAL = 0.08;
 function _computeVisibleCount(sim, aq) {
   if (!sim || !aq) return 0;
   const interval = sim.effectiveInterval || EVENT_INTERVAL;
+  if (aq.battleMode === 'manual') {
+    return Math.min(sim.totalEvents, Math.max(1, Math.floor(Game.questElapsedMs() / 1000 / interval) + 1));
+  }
   const elapsedSec = (Date.now() - aq.startedAt) / 1000;
   const decisive = (sim.decisiveIndex != null) ? sim.decisiveIndex : sim.totalEvents - 1;
 
@@ -5321,6 +5464,7 @@ export function getSimInfo() {
     intervalMs: sim.effectiveInterval * 1000,
     decisiveIndex: sim.decisiveIndex != null ? sim.decisiveIndex : sim.totalEvents - 1,
     fastForwardMs: FAST_FORWARD_INTERVAL * 1000,
+    awaitingInput: !!sim.pending,
   };
 }
 
@@ -5353,6 +5497,56 @@ export function getSimEvents() {
   }));
 }
 
+// ── Manual battle API ────────────────────────────────────────────────────
+export function getPendingDecision() {
+  const aq = Game.state.guild.activeQuest;
+  if (!aq || aq.battleMode !== 'manual') return null;
+  const sim = ensureSim();
+  return sim && sim.pending ? sim.pending : null;
+}
+function _freezeManualClock(aq, sim) {
+  // Called when the sim was waiting on the player: restart the playback clock
+  // at the last revealed event so the next events play at normal pace instead
+  // of fast-forwarding through the time spent deciding.
+  const intervalMs = sim.effectiveInterval * 1000;
+  aq.pausedMs = Math.max(0, Date.now() - aq.startedAt - Math.max(0, sim.totalEvents - 1) * intervalMs);
+}
+export function submitManualChoice(choice) {
+  const aq = Game.state.guild.activeQuest;
+  if (!aq || aq.battleMode !== 'manual') return { ok: false, reason: 'No manual battle in progress.' };
+  const sim = ensureSim();
+  if (!sim || !sim.pending) return { ok: false, reason: 'No one is waiting for orders.' };
+  const pending = sim.pending;
+  if (!choice || choice.index !== pending.index) return { ok: false, reason: 'That turn has already passed.' };
+  if (Game.questEventsRevealed() < sim.totalEvents) return { ok: false, reason: 'Wait for the current action to finish.' };
+  const opt = pending.options.find(o => o.id === choice.skillId);
+  if (!opt) return { ok: false, reason: 'That move is not available.' };
+  if (!opt.ready) return { ok: false, reason: `${opt.name} is on cooldown.` };
+  let targetId = null;
+  if (opt.kind === 'single') {
+    const t = pending.enemies.find(e => e.id === choice.targetId);
+    if (!t) return { ok: false, reason: 'Choose a valid target.' };
+    targetId = t.id;
+  }
+  _freezeManualClock(aq, sim);
+  aq.manualDecisions = (aq.manualDecisions || []).concat([{ skillId: opt.id, targetId }]);
+  if (!ensureSim()) return { ok: false, reason: 'The battle could not continue.' };
+  Game.save();
+  return { ok: true };
+}
+export function autoResolveManualBattle() {
+  const aq = Game.state.guild.activeQuest;
+  if (!aq || aq.battleMode !== 'manual') return { ok: false, reason: 'No manual battle in progress.' };
+  if (aq.manualAutoRest) return { ok: true };
+  const sim = ensureSim();
+  if (!sim) return { ok: false, reason: 'The battle could not continue.' };
+  if (!sim.pending) return { ok: true };
+  if (Game.questEventsRevealed() >= sim.totalEvents) _freezeManualClock(aq, sim);
+  aq.manualAutoRest = true;
+  if (!ensureSim()) return { ok: false, reason: 'The battle could not continue.' };
+  Game.save();
+  return { ok: true };
+}
 export function resetCombatLog() {
   _sim = null;
   _simQuestId = null;

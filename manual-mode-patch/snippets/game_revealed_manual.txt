@@ -1,0 +1,4 @@
+    if (aq.battleMode === 'manual') {
+      const _ivl = _getEventInterval();
+      return Math.min(aq.eventCount || 1, Math.max(1, Math.floor(questElapsedMs() / _ivl) + 1));
+    }

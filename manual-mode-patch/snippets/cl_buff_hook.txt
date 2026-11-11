@@ -1,0 +1,7 @@
+        const _mtb = manualTurn(buffMember, 'buff', livingEnemies);
+        if (_mtb && _mtb.pause) break roundLoop;
+        const manualBuffPick = _mtb && !_mtb.skip ? _mtb : null;
+        manualTargetId = manualBuffPick ? manualBuffPick.targetId : null;
+        const skillPool = _mtb
+          ? (manualBuffPick ? [manualBuffPick.skillId] : [])
+          : (readySkills.length > 0 ? readySkills : buffSkills);

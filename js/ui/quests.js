@@ -1,7 +1,7 @@
 import Game from '../game.js';
 import { RANK_ORDER, getQuest, getItem, getClass, getItemRarity, CLASSES, rankIndex } from '../data.js';
 import { rankTag, fmtTime, timeAgo, showToast } from './helpers.js';
-import { generateCombatLog, getCombatSnapshot, getQuestPhase, getPhases, resetCombatLog, getSimInfo } from './combatlog.js';
+import { generateCombatLog, getCombatSnapshot, getQuestPhase, getPhases, resetCombatLog, getSimInfo, getPendingDecision, submitManualChoice, autoResolveManualBattle } from './combatlog.js';
 import { getQuestDifficultyTier, DIFFICULTY_TIERS } from '../questgen.js';
 import { esc, rankCss } from '../util.js';
 
@@ -61,6 +61,7 @@ export function renderQuests(setTabCallback) {
 
   el.innerHTML = tabs + content;
   bindEvents(el, setTabCallback);
+  if (s.guild.activeQuest) updateManualPanel(s.guild.activeQuest);
 }
 
 // ── Live quest update (lightweight DOM patches) ─────────────────────────
@@ -75,12 +76,13 @@ export function tickUpdateCombatVisuals() {
   // Ensure event count is set from the sim
   if (!aq.eventCount) {
     const simInfo = getSimInfo();
-    if (simInfo) Game.setQuestEventCount(simInfo.eventCount, simInfo.intervalMs, simInfo.decisiveIndex, simInfo.fastForwardMs);
+    if (simInfo) Game.setQuestEventCount(simInfo.eventCount, simInfo.intervalMs, simInfo.decisiveIndex, simInfo.fastForwardMs, simInfo.awaitingInput);
   }
 
   // Phase tracker (progress bar removed — fight plays to completion)
   const progress = Game.questProgress();
   const phase = getQuestPhase(progress);
+  updateManualPanel(aq);
   const phaseEl = document.getElementById('aq-phase-label');
   if (phaseEl) phaseEl.textContent = `${phase.icon} ${phase.label}`;
 
@@ -227,6 +229,88 @@ export function tickUpdateQuests() {
 
 // ── Active Quest View ───────────────────────────────────────────────────
 
+// ── Manual battle panel ──────────────────────────────────────────────────
+let manualPick = null; // { index, skillId } — a single-target move waiting for its target
+function sendManualChoice(pending, skillId, targetId) {
+  const r = submitManualChoice({ index: pending.index, skillId, targetId });
+  manualPick = null;
+  if (!r.ok) showToast(r.reason, 'error');
+  const host = document.getElementById('aq-manual-panel');
+  if (host) host.dataset.key = '';
+  tickUpdateCombatVisuals();
+}
+function updateManualPanel(aq) {
+  const host = document.getElementById('aq-manual-panel');
+  if (!host) return;
+  if (!aq || aq.battleMode !== 'manual') {
+    if (host.dataset.key) { host.innerHTML = ''; host.dataset.key = ''; }
+    return;
+  }
+  const pending = getPendingDecision();
+  if (!pending) {
+    manualPick = null;
+    if (host.dataset.key !== 'none') {
+      host.innerHTML = aq.manualAutoRest ? '<div class="aq-manual-note">🤖 The party is finishing the battle on its own…</div>' : '';
+      host.dataset.key = 'none';
+    }
+    return;
+  }
+  if (manualPick && manualPick.index !== pending.index) manualPick = null;
+  const caughtUp = Game.questEventsRevealed() >= (aq.eventCount || 0);
+  const key = caughtUp ? `ask:${pending.index}:${manualPick ? manualPick.skillId : ''}` : `wait:${pending.index}`;
+  if (host.dataset.key === key) return;
+  host.dataset.key = key;
+  if (!caughtUp) {
+    host.innerHTML = '<div class="aq-manual-note">⏳ The battle unfolds…</div>';
+    return;
+  }
+  const sel = manualPick ? pending.options.find(o => o.id === manualPick.skillId) : null;
+  const skillBtns = pending.options.map(o => {
+    const tag = o.kind === 'aoe' ? 'all enemies' : o.kind === 'single' ? 'one enemy' : 'party';
+    const cd = o.ready ? '' : ` · cooldown ${o.cd}`;
+    return `<button class="btn btn-sm aq-manual-skill${sel && sel.id === o.id ? ' selected' : ''}" data-skill="${esc(o.id)}" ${o.ready ? '' : 'disabled'} title="${esc(o.desc)}">${o.icon} ${esc(o.name)} <span class="aq-manual-tag">${tag}${cd}</span></button>`;
+  }).join('');
+  let targetRow = '';
+  if (sel && sel.kind === 'single') {
+    targetRow = `<div class="aq-manual-subhead">Choose a target for ${esc(sel.name)}</div><div class="aq-manual-row">` +
+      pending.enemies.map(e => `<button class="btn btn-sm aq-manual-target" data-enemy="${esc(e.id)}">👹 ${e.name} <span class="aq-manual-tag">${e.hp}/${e.maxHp}</span></button>`).join('') +
+      '</div>';
+  }
+  host.innerHTML = `
+    <div class="aq-manual-head">🎮 ${pending.memberName}'s turn — choose a ${pending.lane === 'buff' ? 'support move' : 'move'}</div>
+    <div class="aq-manual-row">${skillBtns}</div>
+    ${targetRow}
+    <div class="aq-manual-foot"><button class="btn btn-sm btn-ghost aq-manual-auto">🤖 Auto-resolve the rest</button></div>`;
+  host.querySelectorAll('.aq-manual-skill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const o = pending.options.find(x => x.id === btn.dataset.skill);
+      if (!o || !o.ready) return;
+      if (o.kind === 'single' && pending.enemies.length > 1) {
+        manualPick = { index: pending.index, skillId: o.id };
+        updateManualPanel(aq);
+        return;
+      }
+      sendManualChoice(pending, o.id, o.kind === 'single' ? pending.enemies[0].id : null);
+    });
+  });
+  host.querySelectorAll('.aq-manual-target').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!manualPick) return;
+      sendManualChoice(pending, manualPick.skillId, btn.dataset.enemy);
+    });
+  });
+  const autoBtn = host.querySelector('.aq-manual-auto');
+  if (autoBtn) {
+    autoBtn.addEventListener('click', () => {
+      if (!confirm('Let the party finish this battle on its own? You cannot take control back.')) return;
+      const r = autoResolveManualBattle();
+      if (!r.ok) showToast(r.reason, 'error');
+      manualPick = null;
+      host.dataset.key = '';
+      tickUpdateCombatVisuals();
+    });
+  }
+}
 function renderActiveQuestView(s) {
   const aq = s.guild.activeQuest;
   const quest = aq.questData || Game.getGeneratedQuest(aq.questId) || getQuest(aq.questId);
@@ -235,7 +319,7 @@ function renderActiveQuestView(s) {
   // Ensure event count is set
   if (!aq.eventCount) {
     const simInfo = getSimInfo();
-    if (simInfo) Game.setQuestEventCount(simInfo.eventCount, simInfo.intervalMs, simInfo.decisiveIndex, simInfo.fastForwardMs);
+    if (simInfo) Game.setQuestEventCount(simInfo.eventCount, simInfo.intervalMs, simInfo.decisiveIndex, simInfo.fastForwardMs, simInfo.awaitingInput);
   }
 
   const progress = Game.questProgress();
@@ -382,6 +466,7 @@ function renderActiveQuestView(s) {
           </div>
         </div>
         <div class="aq-right-col">
+          <div class="aq-manual-panel" id="aq-manual-panel"></div>
           <div class="aq-combat-log-section">
             <div class="aq-section-label">Combat Log</div>
             <div class="aq-combat-log" id="aq-combat-log">${logEntries}</div>
@@ -423,6 +508,16 @@ function renderQuestBoard(s) {
   }
 
   // Party strength display
+  const bm = s.battleMode === 'manual' ? 'manual' : 'auto';
+  const battleModePicker = `
+        <div class="bm-picker">
+          <div class="bm-label">Battle Mode</div>
+          <div class="bm-options">
+            <button class="btn btn-sm btn-battle-mode${bm === 'auto' ? ' selected' : ''}" data-mode="auto" title="The party fights on its own">🤖 Auto</button>
+            <button class="btn btn-sm btn-battle-mode${bm === 'manual' ? ' selected' : ''}" data-mode="manual" title="You choose each move and target">🎮 Manual</button>
+          </div>
+          ${bm === 'manual' ? '<div class="bm-hint">You pick every attack and buff move (and its target). The battle waits for you. Auto-Battle runs always fight automatically.</div>' : ''}
+        </div>`;
   const partyStr = Game.getPartyStrength();
 
   // Auto-run strategy picker
@@ -477,6 +572,7 @@ function renderQuestBoard(s) {
           <div class="qb-ps-value">${Math.round(partyStr)}</div>
         </div>
       </div>
+      ${battleModePicker}
       ${strategyPicker}
       ${refreshTimer}
     </div>
@@ -949,7 +1045,7 @@ function bindEvents(el, setTabCallback) {
   el.querySelectorAll('.btn-send-party[data-quest-id]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const result = Game.startQuest(btn.dataset.questId);
+      const result = Game.startQuest(btn.dataset.questId, { battleMode: Game.state.battleMode });
       if (result.ok) {
         selectedQuestId = null;
         resetCombatLog();
@@ -990,6 +1086,13 @@ function bindEvents(el, setTabCallback) {
     });
   });
   // Stop auto-run button
+  el.querySelectorAll('.btn-battle-mode').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      Game.setBattleMode(btn.dataset.mode);
+      renderQuests(setTabCallback);
+    });
+  });
   const stopBtn = el.querySelector('.btn-ar-stop');
   if (stopBtn) {
     stopBtn.addEventListener('click', (e) => {

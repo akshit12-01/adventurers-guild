@@ -74,6 +74,12 @@ function _fullRenderHall(el) {
 
 // ── Lightweight update (called every tick — no innerHTML replacement) ──────
 
+function questTimerText(aq, revealed, total) {
+  if (aq.battleMode === 'manual') {
+    return (aq.awaitingInput && revealed >= total) ? '🎮 Awaiting your orders' : '🎮 Manual battle';
+  }
+  return `${Math.min(revealed, total)} / ${total}`;
+}
 function _updateHall(el) {
   const s = Game.state;
 
@@ -84,7 +90,7 @@ function _updateHall(el) {
     const aq = s.guild.activeQuest;
     const revealed = Game.questEventsRevealed();
     const total = aq.eventCount || 1;
-    if (timerEl) timerEl.textContent = `${Math.min(revealed, total)} / ${total}`;
+    if (timerEl) timerEl.textContent = questTimerText(aq, revealed, total);
     if (fillEl) fillEl.style.width = (Game.questProgress() * 100).toFixed(1) + '%';
   }
 
@@ -140,7 +146,7 @@ function renderActiveQuestCard(s) {
         <span>${env.icon} ${env.name}</span> ·
         <span>Party: ${aq.partySnapshot.length} members</span>
       </div>
-      <div class="quest-timer" id="quest-timer">${Math.min(revealed, total)} / ${total}</div>
+      <div class="quest-timer" id="quest-timer">${questTimerText(aq, revealed, total)}</div>
       <div class="progress-bar thick">
         <div class="progress-fill" id="quest-progress-fill" style="width:${pct.toFixed(1)}%; background: var(--cyan)"></div>
       </div>

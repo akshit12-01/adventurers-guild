@@ -1,0 +1,1 @@
+  roundLoop: for (let i = 0; i < MAX_BATTLE_EVENTS; i++) {

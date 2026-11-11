@@ -1,0 +1,68 @@
+  // ── Manual battle mode ─────────────────────────────────────────────────
+  // In a manual battle the player chooses the move (and target) for every
+  // party attack / buff turn. The sim stays a pure function of
+  // (seed, frozen inputs, recorded decisions): when it reaches a turn that has
+  // no recorded decision it stops and describes that turn in `pending`. The UI
+  // records the answer and the battle is replayed from the start with one more
+  // decision. Heals, reactive skills, passives and equipment procs stay automatic.
+  const manualMode = aq.battleMode === 'manual';
+  const manualDecisions = Array.isArray(aq.manualDecisions) ? aq.manualDecisions : [];
+  const manualAutoRest = manualMode && !!aq.manualAutoRest;
+  const MANUAL_BASIC = '__BASIC__';
+  let manualCursor = 0;
+  let manualPending = null;
+  let manualTargetId = null;
+  function pickTarget(list, s) {
+    if (manualTargetId) {
+      const t = list.find(e => e.id === manualTargetId);
+      if (t) return t;
+    }
+    return sPick(list, s);
+  }
+  function manualOptions(member, lane) {
+    const cds = skillCooldowns[member.id] || {};
+    const opts = [];
+    if (lane === 'attack') {
+      opts.push({ id: MANUAL_BASIC, name: 'Basic Attack', icon: '⚔', desc: 'A plain strike against one enemy.', kind: 'single', ready: true, cd: 0 });
+    }
+    const pool = lane === 'attack' ? memberAttackSkills[member.id] : memberBuffSkills[member.id];
+    for (const sid of pool || []) {
+      const sk = getSkill(sid);
+      if (!sk) continue;
+      if (lane === 'buff' && sid === 'CAMOUFLAGE' && member.class !== 'RANGER') continue;
+      const cd = cds[sid] || 0;
+      const kind = lane === 'attack'
+        ? (AOE_SKILLS[sid] ? 'aoe' : 'single')
+        : (sid === 'MARK_FOR_DEATH' ? 'single' : 'party');
+      opts.push({ id: sid, name: sk.name || sid, icon: sk.icon || '✦', desc: sk.description || '', kind, ready: cd <= 0, cd });
+    }
+    return opts;
+  }
+  // Returns null (automatic turn), { skip } (nothing usable), { pause } (waiting
+  // for the player) or { skillId, targetId } (the move to perform).
+  function manualTurn(member, lane, foes) {
+    if (!manualMode) return null;
+    if (manualAutoRest && manualCursor >= manualDecisions.length) return null;
+    const usable = manualOptions(member, lane).filter(o => o.ready);
+    if (usable.length === 0) return { skip: true };
+    const needsTarget = (o) => o.kind === 'single';
+    if (usable.length === 1 && (!needsTarget(usable[0]) || foes.length === 1)) {
+      return { skillId: usable[0].id, targetId: needsTarget(usable[0]) ? foes[0].id : null };
+    }
+    const d = manualDecisions[manualCursor];
+    if (d) {
+      manualCursor++;
+      const o = usable.find(x => x.id === d.skillId) || usable[0];
+      const t = needsTarget(o) && foes.some(e => e.id === d.targetId) ? d.targetId : null;
+      return { skillId: o.id, targetId: t };
+    }
+    manualPending = {
+      index: manualCursor,
+      memberId: member.id,
+      memberName: member.name,
+      lane,
+      options: manualOptions(member, lane),
+      enemies: foes.map(e => ({ id: e.id, name: e.name, hp: e.hp, maxHp: e.maxHp })),
+    };
+    return { pause: true };
+  }

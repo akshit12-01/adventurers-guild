@@ -1,0 +1,6 @@
+function questTimerText(aq, revealed, total) {
+  if (aq.battleMode === 'manual') {
+    return (aq.awaitingInput && revealed >= total) ? '🎮 Awaiting your orders' : '🎮 Manual battle';
+  }
+  return `${Math.min(revealed, total)} / ${total}`;
+}

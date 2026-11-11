@@ -1,0 +1,9 @@
+  function questElapsedMs() {
+    const aq = state.guild.activeQuest;
+    if (!aq) return 0;
+    return Math.max(0, Date.now() - aq.startedAt - (aq.pausedMs || 0));
+  }
+  function setBattleMode(mode) {
+    state.battleMode = mode === 'manual' ? 'manual' : 'auto';
+    save();
+  }

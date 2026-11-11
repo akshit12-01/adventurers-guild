@@ -1,0 +1,10 @@
+  const bm = s.battleMode === 'manual' ? 'manual' : 'auto';
+  const battleModePicker = `
+        <div class="bm-picker">
+          <div class="bm-label">Battle Mode</div>
+          <div class="bm-options">
+            <button class="btn btn-sm btn-battle-mode${bm === 'auto' ? ' selected' : ''}" data-mode="auto" title="The party fights on its own">🤖 Auto</button>
+            <button class="btn btn-sm btn-battle-mode${bm === 'manual' ? ' selected' : ''}" data-mode="manual" title="You choose each move and target">🎮 Manual</button>
+          </div>
+          ${bm === 'manual' ? '<div class="bm-hint">You pick every attack and buff move (and its target). The battle waits for you. Auto-Battle runs always fight automatically.</div>' : ''}
+        </div>`;

@@ -1,0 +1,36 @@
+// ── Sim environment ──────────────────────────────────────────────────────
+// Everything buildSimulation reads from live game state goes through here.
+// Auto battles have no aq.simEnv and read live state exactly as before.
+// Manual battles freeze these inputs when the quest starts (aq.simEnv), so the
+// battle can be replayed identically after every decision and after a reload,
+// whatever the player does in other tabs in the meantime.
+function makeSimEnv(aq) {
+  const env = aq.simEnv || null;
+  if (!env) {
+    return {
+      getDmgBonus: (q) => (Game.getDmgBonus ? Game.getDmgBonus(q) : 0),
+      getDmgReduction: (q) => (Game.getDmgReduction ? Game.getDmgReduction(q) : 0),
+      getAtkSpeedBonus: (q) => (Game.getAtkSpeedBonus ? Game.getAtkSpeedBonus(q) : 0),
+      getHealBonus: (q) => (Game.getHealBonus ? Game.getHealBonus(q) : 0),
+      hasTalent: (id) => (Game.hasTalent ? Game.hasTalent(id) : false),
+      getPartyAuras: () => (Game.getPartyAuras ? Game.getPartyAuras() : null),
+      effStats: (id, auras) => { const m = Game.getMember(id); return m ? Game.effectiveStats(m, auras) : null; },
+      equipment: (id) => { const m = Game.getMember(id); return m ? (m.equipment || {}) : null; },
+      skills: (id) => (Game.getActiveMemberSkills ? Game.getActiveMemberSkills(id) : []),
+    };
+  }
+  const talents = new Set(env.talents || []);
+  const memberEnv = (id) => (env.members && env.members[id]) || null;
+  const clone = (o) => (o == null ? o : JSON.parse(JSON.stringify(o)));
+  return {
+    getDmgBonus: () => env.dmgBonus || 0,
+    getDmgReduction: () => env.dmgReduction || 0,
+    getAtkSpeedBonus: () => env.atkSpeedBonus || 0,
+    getHealBonus: () => env.healBonus || 0,
+    hasTalent: (id) => talents.has(id),
+    getPartyAuras: () => clone(env.auras || null),
+    effStats: (id) => { const me = memberEnv(id); return me ? clone(me.eff) : null; },
+    equipment: (id) => { const me = memberEnv(id); return me ? clone(me.equipment || {}) : null; },
+    skills: (id) => { const me = memberEnv(id); return me ? (me.skills || []).slice() : []; },
+  };
+}

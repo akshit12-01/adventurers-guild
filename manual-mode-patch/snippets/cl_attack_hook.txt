@@ -1,0 +1,7 @@
+          const _mt = manualTurn(attacker, 'attack', livingEnemies);
+          if (_mt && _mt.pause) break roundLoop;
+          const manualPick = _mt && !_mt.skip ? _mt : null;
+          manualTargetId = manualPick ? manualPick.targetId : null;
+          let skillPool = manualPick
+            ? (manualPick.skillId === MANUAL_BASIC ? [] : [manualPick.skillId])
+            : memberAttackSkills[attacker.id].filter(sid => !skillCooldowns[attacker.id][sid]);

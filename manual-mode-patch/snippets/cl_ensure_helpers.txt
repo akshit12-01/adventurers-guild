@@ -1,0 +1,7 @@
+function manualSimKey(aq) {
+  if (aq.battleMode !== 'manual') return '';
+  return `${aq.startedAt}:${(aq.manualDecisions || []).length}:${aq.manualAutoRest ? 'a' : 'm'}`;
+}
+function syncManualInfo(sim) {
+  Game.setQuestEventCount(sim.totalEvents, sim.effectiveInterval * 1000, sim.decisiveIndex, FAST_FORWARD_INTERVAL * 1000, !!sim.pending);
+}

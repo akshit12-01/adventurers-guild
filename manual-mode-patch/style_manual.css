@@ -1,0 +1,19 @@
+
+/* ── Manual battle mode ─────────────────────────────────────────────── */
+.bm-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 8px 0; }
+.bm-label { font-size: 0.8rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+.bm-options { display: flex; gap: 6px; }
+.bm-hint { flex-basis: 100%; font-size: 0.78rem; color: var(--text-dim); }
+.btn-battle-mode.selected,
+.aq-manual-skill.selected { background: var(--cyan-dim); border-color: var(--cyan); color: var(--cyan); }
+.aq-manual-panel:empty { display: none; }
+.aq-manual-panel {
+  margin-bottom: 10px; padding: 10px 12px;
+  background: var(--bg-card-alt); border: 1px solid var(--cyan-dim); border-radius: var(--radius);
+}
+.aq-manual-head { font-weight: 700; color: var(--gold); margin-bottom: 8px; }
+.aq-manual-subhead { font-size: 0.8rem; color: var(--text-dim); margin: 10px 0 6px; }
+.aq-manual-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.aq-manual-tag { font-size: 0.72rem; opacity: 0.7; margin-left: 4px; }
+.aq-manual-foot { margin-top: 10px; }
+.aq-manual-note { font-size: 0.85rem; color: var(--text-dim); }
